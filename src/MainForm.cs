@@ -18,11 +18,15 @@ namespace AutoShaper
         readonly Settings settings;
         readonly Bot bot;
         readonly EventWaitHandle reopen;
+        readonly bool launchWindow;
         readonly Panel[] pages = new Panel[PageCount];
         readonly MenuTabs tabs = new MenuTabs("autoplay", "achievements", "misc");
         readonly FooterBar footer = new FooterBar();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 150 };
         KeyMonitor keys;
+        NotifyIcon tray;
+        ContextMenuStrip trayMenu;
+        ToolStripMenuItem trayToggle;
         IntPtr previous;
         bool closing;
         string notice = "", lastFarmNote = "";
@@ -48,11 +52,16 @@ namespace AutoShaper
         {
             settings = s;
             reopen = showSignal;
+            launchWindow = showSignal != null;
             bot = new Bot(s);
-            Text = "autoshaper.xyz"; FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.CenterScreen;
+            Text = "AutoShaper"; FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = launchWindow; TopMost = true; StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.None; ClientSize = new Size(480, 274); BackColor = Skin.Background; ForeColor = Skin.Text; Font = Skin.Font; DoubleBuffered = true;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-            try { keys = new KeyMonitor(); keys.Pressed += OnBinding; } catch (Exception e) { Notice(e.Message); }
+            if (launchWindow)
+            {
+                try { keys = new KeyMonitor(); keys.Pressed += OnBinding; keys.Configure(settings.MenuKey, settings.PauseKey); }
+                catch (Exception e) { if (keys != null) { keys.Dispose(); keys = null; } Notice(e.Message); }
+            }
 
             tabs.SetBounds(TabsX, 5, 465 - TabsX, 40); tabs.Change = SelectPage; Controls.Add(tabs);
             Controls.Add(footer);
@@ -62,6 +71,9 @@ namespace AutoShaper
             menu.Items.Add("save detection snapshot", null, (o, e) => { bot.RequestSnapshot(); Notice("snapshot saved to logs"); });
             DarkMenuRenderer.Apply(menu);
             footer.ContextMenuStrip = menu;
+            VisibleChanged += (o, e) => UpdateTrayText();
+            Resize += (o, e) => UpdateTrayText();
+            if (launchWindow) CreateTray();
             BuildAll(0);
 
             timer.Tick += (o, e) => Tick();
@@ -69,7 +81,15 @@ namespace AutoShaper
             FormClosing += (o, e) => Shutdown();
         }
 
-        protected override CreateParams CreateParams { get { var p = base.CreateParams; p.ExStyle = (p.ExStyle & ~0x40000) | 0x80; return p; } }
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var p = base.CreateParams;
+                p.ExStyle = launchWindow ? (p.ExStyle & ~0x80) | 0x40000 : (p.ExStyle & ~0x40000) | 0x80;
+                return p;
+            }
+        }
 
         void BuildAll(int selected)
         {
@@ -121,10 +141,9 @@ namespace AutoShaper
             using (var p = new Pen(Color.Black)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
             using (var p = new Pen(Skin.Border)) { g.DrawRectangle(p, i3, i3, Width - i7, Height - i7); g.DrawRectangle(p, i10, i50, Width - i20, Height - i88); }
             using (var p = new Pen(Color.FromArgb(22, 22, 24))) g.DrawRectangle(p, i5, i5, Width - i11, Height - i11);
-            var flags = TextFormatFlags.NoPadding;
-            TextRenderer.DrawText(g, "autoshaper", Skin.Logo, new Point(Skin.D(24), Skin.D(17)), Color.White, flags);
-            int word = TextRenderer.MeasureText(g, "autoshaper", Skin.Logo, Size.Empty, flags).Width;
-            TextRenderer.DrawText(g, ".xyz", Skin.Logo, new Point(Skin.D(23) + word, Skin.D(17)), Skin.Accent, flags);
+            TextRenderer.DrawText(g, "AutoShaper", Skin.Logo,
+                new Rectangle(0, Skin.D(5), Skin.D(TabsX), Skin.D(35)), Color.White,
+                TextFormatFlags.NoPadding | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         }
 
         void DragMenu(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { Native.ReleaseCapture(); Native.SendMessage(Handle, 0xA1, new IntPtr(2), IntPtr.Zero); } }
@@ -225,7 +244,7 @@ namespace AutoShaper
             var app = Group(pages[2], "app", 230, 0, 218, 94);
             Button(app, "save settings", 14, 24, 92, () => { settings.Save(); Notice("settings saved"); });
             locked.Add(Button(app, "reset settings", 112, 24, 92, ResetSettings));
-            Button(app, "unload autoshaper.xyz", 14, 58, 190, Close);
+            Button(app, "unload AutoShaper", 14, 58, 190, Close);
 
             // Both actions arm first and need the confirm button; arming one disarms the other.
             var danger = Group(pages[2], "danger zone", 0, 100, 448, 79);
@@ -354,6 +373,7 @@ namespace AutoShaper
             settings.MenuKey = d.MenuKey; settings.MenuModifiers = d.MenuModifiers; settings.PauseKey = d.PauseKey; settings.PauseModifiers = d.PauseModifiers;
             armed = Armed.None;
             Changed();
+            ApplyBindings();
             RebuildUI(Skin.Scale);
             Notice("settings reset");
         }
@@ -363,7 +383,10 @@ namespace AutoShaper
             if (key != 0 && (menu ? settings.PauseKey : settings.MenuKey) == key && (menu ? settings.PauseModifiers : settings.MenuModifiers) == mods) { Notice("choose a different binding for each action"); return; }
             if (menu) { settings.MenuKey = key; settings.MenuModifiers = mods; } else { settings.PauseKey = key; settings.PauseModifiers = mods; }
             Changed();
+            ApplyBindings();
         }
+
+        void ApplyBindings() { if (keys != null) keys.Configure(settings.MenuKey, settings.PauseKey); }
 
         static bool Matches(int assigned, int modifiers, int key, int observed) { return assigned != 0 && assigned == key && modifiers == observed; }
 
@@ -377,9 +400,15 @@ namespace AutoShaper
             BeginInvoke(new Action(() =>
             {
                 if (closing || BindingEditor.Capturing) return;
-                if (menu) { if (Visible) HideMenu(); else ShowMenu(); }
+                if (menu) { if (Visible && WindowState != FormWindowState.Minimized) HideMenu(); else ShowMenu(); }
                 else HotkeyToggle();
             }));
+        }
+
+        void ToggleMenu()
+        {
+            if (closing) return;
+            if (Visible && WindowState != FormWindowState.Minimized) HideMenu(); else ShowMenu();
         }
 
         void HideMenu()
@@ -393,7 +422,53 @@ namespace AutoShaper
         {
             UpdateText();
             previous = Native.GetForegroundWindow();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Show(); Activate(); Native.SetForegroundWindow(Handle);
+        }
+
+        void CreateTray()
+        {
+            try
+            {
+                if (Icon == null) Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (Icon == null) throw new InvalidOperationException("application icon unavailable");
+                trayMenu = new ContextMenuStrip();
+                DarkMenuRenderer.Apply(trayMenu);
+                trayToggle = new ToolStripMenuItem();
+                trayToggle.Click += (o, e) => ToggleMenu();
+                trayMenu.Items.Add(trayToggle);
+                trayMenu.Items.Add(new ToolStripSeparator());
+                trayMenu.Items.Add("unload AutoShaper", null, (o, e) => Close());
+                trayMenu.Opening += (o, e) => UpdateTrayText();
+                tray = new NotifyIcon { Icon = Icon, Text = "AutoShaper", ContextMenuStrip = trayMenu };
+                tray.MouseClick += (o, e) => { if (e.Button == MouseButtons.Left) ToggleMenu(); };
+                tray.Visible = true;
+                UpdateTrayText();
+            }
+            catch
+            {
+                Log.Write("tray.unavailable");
+                DisposeTray();
+                Notice("tray icon unavailable");
+            }
+        }
+
+        void UpdateTrayText()
+        {
+            if (trayToggle != null) trayToggle.Text = Visible && WindowState != FormWindowState.Minimized ? "hide menu" : "show menu";
+        }
+
+        void DisposeTray()
+        {
+            if (tray != null)
+            {
+                tray.Visible = false;
+                tray.ContextMenuStrip = null;
+                tray.Dispose();
+                tray = null;
+            }
+            if (trayMenu != null) { trayMenu.Dispose(); trayMenu = null; }
+            trayToggle = null;
         }
 
         void Tick()
@@ -505,6 +580,7 @@ namespace AutoShaper
             bot.StopAll();
             bot.Dispose();
             if (keys != null) keys.Dispose();
+            DisposeTray();
             settings.Save();
             Log.Write("menu closed");
         }

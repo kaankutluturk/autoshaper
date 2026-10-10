@@ -25,6 +25,7 @@ and run it. No installer. If Windows SmartScreen complains, click More info, the
 ## Using it
 
 Insert shows or hides the menu. Home starts or stops. Both can be rebound under misc.
+The menu has a taskbar button while open; its tray icon can show or hide the menu, or unload AutoShaper.
 
 The autoplay tab plays a run up to the score you set, then ends it so the game saves it. Tick loop
 to keep going until the total score achievements are done.

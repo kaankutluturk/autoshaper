@@ -1,8 +1,5 @@
-// Generates assets\autoshaper.ico from WAVESHAPER's own 64px pixel-art icon. The edit is done on the
-// icon's own pixel grid: background, glow and the red neon outline are untouched; the inside of the
-// "W" becomes flat three-tone metal with seams and rivets, and the centre block becomes a red eye.
-// The result is scaled up with nearest-neighbour so it stays pixel art at every size.
-// Input: the game's 64px icon image (tools\make-icon.ps1 extracts it). Build/run: tools\make-icon.ps1
+// Updates the centre eye housing with the same pixel-art metal finish as the W, then writes the
+// 256px preview and multi-size Windows icon. The 64px source grid lives in assets/autoshaper-source.png.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -12,109 +9,109 @@ using System.IO;
 
 static class MakeIcon
 {
-    // The W on the 64x64 grid. Bar and step share one interior; the eye block has its own outline.
-    static readonly Rectangle[] Letter =
-    {
-        new Rectangle(12, 12, 8, 40), new Rectangle(20, 36, 8, 8),
-        new Rectangle(36, 36, 8, 8), new Rectangle(44, 12, 8, 40),
-    };
     static readonly Rectangle Eye = new Rectangle(28, 28, 8, 8);
-
-    static readonly Color Light = Color.FromArgb(214, 216, 222), Mid = Color.FromArgb(152, 156, 164),
-        Dark = Color.FromArgb(98, 101, 110), Rivet = Color.FromArgb(62, 64, 72),
-        Housing = Color.FromArgb(36, 36, 42), EyeRed = Color.FromArgb(255, 36, 28), EyeDim = Color.FromArgb(150, 0, 0), EyeHot = Color.FromArgb(255, 196, 180);
+    static readonly Color Light = Color.FromArgb(214, 216, 222);
+    static readonly Color Mid = Color.FromArgb(152, 156, 164);
+    static readonly Color Dark = Color.FromArgb(98, 101, 110);
+    static readonly Color Rivet = Color.FromArgb(62, 64, 72);
+    static readonly Color EyeRed = Color.FromArgb(255, 36, 28);
+    static readonly Color EyeDim = Color.FromArgb(150, 0, 0);
+    static readonly Color EyeHot = Color.FromArgb(255, 196, 180);
+    static readonly int[] Sizes = { 256, 128, 64, 48, 32, 24, 16 };
 
     static int Main(string[] args)
     {
-        string source = args[0], outDir = args[1];
-        Directory.CreateDirectory(outDir);
-        using (var original = new Bitmap(source))
-        using (var edited = Edit(original))
+        if (args.Length < 2) { Console.Error.WriteLine("usage: MakeIcon <64px source.png> <output directory>"); return 2; }
+        string outputDirectory = args[1];
+        Directory.CreateDirectory(outputDirectory);
+        using (var source = new Bitmap(args[0]))
+        using (var edited = Edit(source))
         {
-            var sizes = new[] { 256, 128, 64, 48, 32, 24, 16 };
             var pngs = new List<byte[]>();
-            foreach (int s in sizes)
-                using (var bmp = Resize(edited, s))
+            foreach (int size in Sizes)
+            {
+                using (var icon = Resize(edited, size))
                 {
-                    if (s == 256) bmp.Save(Path.Combine(outDir, "autoshaper.png"), ImageFormat.Png);
-                    using (var ms = new MemoryStream()) { bmp.Save(ms, ImageFormat.Png); pngs.Add(ms.ToArray()); }
+                    if (size == 256) icon.Save(Path.Combine(outputDirectory, "autoshaper.png"), ImageFormat.Png);
+                    using (var stream = new MemoryStream())
+                    {
+                        icon.Save(stream, ImageFormat.Png);
+                        pngs.Add(stream.ToArray());
+                    }
                 }
-            WriteIco(Path.Combine(outDir, "autoshaper.ico"), sizes, pngs);
+            }
+            WriteIco(Path.Combine(outputDirectory, "autoshaper.ico"), Sizes, pngs);
         }
-        Console.WriteLine("wrote " + Path.Combine(outDir, "autoshaper.ico"));
+        Console.WriteLine("wrote AutoShaper icon assets to " + Path.GetFullPath(outputDirectory));
         return 0;
     }
 
-    static bool InLetter(int x, int y) { foreach (var r in Letter) if (r.Contains(x, y)) return true; return false; }
-    static bool Inside(int x, int y) { return InLetter(x, y) && InLetter(x - 1, y) && InLetter(x + 1, y) && InLetter(x, y - 1) && InLetter(x, y + 1); }
-
-    static Bitmap Edit(Bitmap original)
+    static Bitmap Edit(Bitmap source)
     {
+        if (source.Width != 64 || source.Height != 64) throw new ArgumentException("source icon must be 64x64 pixels");
         var bmp = new Bitmap(64, 64, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bmp)) g.DrawImageUnscaled(original, 0, 0);
+        using (var g = Graphics.FromImage(bmp)) g.DrawImageUnscaled(source, 0, 0);
 
-        // Letter interior: mid fill, light on the upper-left inner edge, dark on the lower-right.
-        for (int y = 0; y < 64; y++)
-            for (int x = 0; x < 64; x++)
+        // Replace the black eye housing with a bevelled metal plate matching the W.
+        for (int y = Eye.Top + 1; y < Eye.Bottom - 1; y++)
+            for (int x = Eye.Left + 1; x < Eye.Right - 1; x++)
             {
-                if (!Inside(x, y)) continue;
-                bool top = !Inside(x, y - 1), left = !Inside(x - 1, y), bottom = !Inside(x, y + 1), right = !Inside(x + 1, y);
+                bool top = y == Eye.Top + 1, left = x == Eye.Left + 1;
+                bool bottom = y == Eye.Bottom - 2, right = x == Eye.Right - 2;
                 bmp.SetPixel(x, y, top || left ? Light : bottom || right ? Dark : Mid);
             }
 
-        // Panel seams across both bars: a dark groove with a lit edge under it.
-        foreach (int x0 in new[] { 14, 46 })
-            foreach (int y in new[] { 23, 30 })
-                for (int x = x0; x < x0 + 5; x++) { bmp.SetPixel(x, y, Dark); bmp.SetPixel(x, y + 1, Light); }
+        // Two tiny fasteners make the housing read as robot plating around the red eye.
+        bmp.SetPixel(Eye.Left + 1, Eye.Top + 1, Rivet);
+        bmp.SetPixel(Eye.Right - 2, Eye.Bottom - 2, Rivet);
 
-        // Joints where the steps meet the bars.
-        for (int y = 38; y <= 42; y++) { bmp.SetPixel(20, y, Dark); bmp.SetPixel(43, y, Dark); }
-
-        // Rivets near the bar ends and on the steps.
-        foreach (var p in new[] { new Point(14, 14), new Point(17, 14), new Point(14, 49), new Point(17, 49),
-                                  new Point(46, 14), new Point(49, 14), new Point(46, 49), new Point(49, 49),
-                                  new Point(24, 40), new Point(39, 40) })
-            bmp.SetPixel(p.X, p.Y, Rivet);
-
-        // Eye: dark housing inside the centre block's neon outline, a red pupil with a hot pixel.
-        for (int y = Eye.Top + 1; y < Eye.Bottom - 1; y++)
-            for (int x = Eye.Left + 1; x < Eye.Right - 1; x++)
-                bmp.SetPixel(x, y, Housing);
+        // Keep the original-size red eye, with its black corner pixels replaced by dark steel.
         for (int y = 30; y <= 33; y++)
             for (int x = 30; x <= 33; x++)
-                bmp.SetPixel(x, y, (x == 30 || x == 33) && (y == 30 || y == 33) ? Housing : (x == 30 || x == 33 || y == 30 || y == 33) ? EyeDim : EyeRed);
+            {
+                bool corner = (x == 30 || x == 33) && (y == 30 || y == 33);
+                bool rim = x == 30 || x == 33 || y == 30 || y == 33;
+                bmp.SetPixel(x, y, corner ? Dark : rim ? EyeDim : EyeRed);
+            }
         bmp.SetPixel(31, 31, EyeHot);
         return bmp;
     }
 
-    // Nearest-neighbour when enlarging keeps the pixel grid; smaller sizes are downsampled smoothly.
-    static Bitmap Resize(Bitmap src, int size)
+    static Bitmap Resize(Bitmap source, int size)
     {
-        var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bmp))
+        var resized = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(resized))
         {
-            bool enlarge = size >= src.Width;
+            bool enlarge = size >= source.Width;
             g.InterpolationMode = enlarge ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = enlarge ? PixelOffsetMode.Half : PixelOffsetMode.HighQuality;
-            g.DrawImage(src, 0, 0, size, size);
+            g.DrawImage(source, 0, 0, size, size);
         }
-        return bmp;
+        return resized;
     }
 
-    static void WriteIco(string path, int[] sizes, List<byte[]> pngs)
+    static void WriteIco(string path, int[] sizes, List<byte[]> images)
     {
-        using (var fs = File.Create(path))
-        using (var w = new BinaryWriter(fs))
+        using (var file = File.Create(path))
+        using (var writer = new BinaryWriter(file))
         {
-            w.Write((ushort)0); w.Write((ushort)1); w.Write((ushort)sizes.Length);
+            writer.Write((ushort)0);
+            writer.Write((ushort)1);
+            writer.Write((ushort)sizes.Length);
             int offset = 6 + 16 * sizes.Length;
             for (int i = 0; i < sizes.Length; i++)
             {
-                w.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i])); w.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
-                w.Write((byte)0); w.Write((byte)0); w.Write((ushort)1); w.Write((ushort)32);
-                w.Write(pngs[i].Length); w.Write(offset); offset += pngs[i].Length;
+                writer.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
+                writer.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
+                writer.Write((byte)0);
+                writer.Write((byte)0);
+                writer.Write((ushort)1);
+                writer.Write((ushort)32);
+                writer.Write(images[i].Length);
+                writer.Write(offset);
+                offset += images[i].Length;
             }
-            foreach (var p in pngs) w.Write(p);
+            foreach (var image in images) writer.Write(image);
         }
     }
 }
